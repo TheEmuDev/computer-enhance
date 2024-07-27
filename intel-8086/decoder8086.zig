@@ -19,17 +19,21 @@ const Instruction = struct {
     operand1: u3,
     operand2: u3,
 
-    pub fn print(self: Instruction) void {
-        const operation = switch (self.opcode) {
-            0b100010 => "mov",
-            else => "unrecognized",
-        };
-
+    pub fn print(self: Instruction) [:0]u8 {
+        const operation = getOpName(self.opcode);
         const op1 = getRegisterName(self.operand1, self.word);
         const op2 = getRegisterName(self.operand2, self.word);
 
-        const print_order = if (self.direction == 0) .{ operation, op2, op1 } else .{ operation, op1, op2 };
-        std.debug.print("{s} {s}, {s}\n", print_order);
+        const print_order = if (self.direction == 0) operation ++ " " ++ op2 ++ ", " ++ op1 else operation ++ op1 ++ ", " ++ op2;
+        std.debug.print("{s}", .{print_order});
+        return print_order;
+    }
+
+    fn getOpName(op_code: u6) *const [3:0]u8 {
+        return switch (op_code) {
+            0b100010 => "mov",
+            else => "???",
+        };
     }
 
     fn getRegisterName(operand: u3, word: u1) *const [2:0]u8 {
@@ -69,19 +73,30 @@ pub fn main() !void {
     defer allocator.free(buffer);
 
     for (1..args.len) |i| {
-        const file = try cwd.openFile(args[i], .{});
-        defer file.close();
+        const infile = try cwd.openFile(args[i], .{});
+        defer infile.close();
 
-        const bytes_read = try file.read(buffer);
+        const bytes_read = try infile.read(buffer);
         var byte_index: usize = 0;
 
-        print("{s}\nbits 16\n\n", .{args[i]});
+        cwd.makeDir("output") catch |e| switch (e) {
+            error.PathAlreadyExists => {},
+            else => return e,
+        };
+
+        var output_dir = try cwd.openDir("output", .{});
+        defer output_dir.close();
+
+        const arg_index: [1]u8 = .{@intCast(i + '0')};
+
+        const outfile = try output_dir.createFile("arg" ++ arg_index ++ ".asm", .{});
+        defer outfile.close();
+
+        _ = try outfile.write("16 bits\n\n");
 
         while (byte_index < bytes_read) : (byte_index += 2) {
             var instr: Instruction = try CreateInstruction(buffer[byte_index .. byte_index + 2]);
-            instr.print();
+            _ = try outfile.write(instr.print());
         }
-
-        print("\n", .{});
     }
 }

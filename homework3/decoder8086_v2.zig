@@ -109,7 +109,7 @@ pub fn create_instruction(bytes: []u8, buf: []u8) !Instruction {
 
     var use_signed_displacement: bool = false;
 
-    log.debug("[{any}]\n", .{bytes[0..6]});
+    // log.debug("[{any}]\n", .{bytes[0..6]});
     switch (bytes[0]) {
         // TODO:(Dean): and [bp - 39], 239 does not create correct src (ln #305 in completionist .asm) low priority (signed vs unsigned)
 
@@ -305,8 +305,10 @@ pub fn create_instruction(bytes: []u8, buf: []u8) !Instruction {
                 0xFE, 0xFF => switch (r_op2) {
                     0b000 => "inc",
                     0b001 => "dec",
-                    0b010, 0b011 => if (is_0xFE) unreachable else "call",
-                    0b100, 0b101 => if (is_0xFE) unreachable else "jmp",
+                    0b010 => if (is_0xFE) unreachable else "call",
+                    0b011 => if (is_0xFE) unreachable else "call far",
+                    0b100 => if (is_0xFE) unreachable else "jmp",
+                    0b101 => if (is_0xFE) unreachable else "jmp far",
                     0b110 => if (is_0xFE) unreachable else "push",
                     0b111 => unreachable,
                 },
@@ -465,7 +467,7 @@ pub fn create_instruction(bytes: []u8, buf: []u8) !Instruction {
             size = 3;
 
             switch (opcode) {
-                0x05, 0x0D, 0x15, 0x1D, 0x25, 0x2D, 0x35, 0x3D, 0xA9, 0xCA => {
+                0x05, 0x0D, 0x15, 0x1D, 0x25, 0x2D, 0x35, 0x3D, 0xA9 => {
                     opname = switch (opcode) {
                         0x05 => "add",
                         0x0D => "or",
@@ -476,7 +478,6 @@ pub fn create_instruction(bytes: []u8, buf: []u8) !Instruction {
                         0x35 => "xor",
                         0x3D => "cmp",
                         0xA9 => "test",
-                        0xC2, 0xCA => "ret",
                         else => unreachable
                     };
                     operand1 = "ax";
@@ -494,6 +495,11 @@ pub fn create_instruction(bytes: []u8, buf: []u8) !Instruction {
                     opname = "mov";
                     operand1 = decode_register(reg, word);
                     src = try fmt.bufPrint(buf, "{s} {s}, {d}\n", .{ opname, operand1, s_data });
+                },
+                0xC2, 0xCA => {
+                    opname = if (opcode == 0xC2) "ret" else "retf";
+                    data = get_immediate(bytes[1], bytes[2]);
+                    src = try fmt.bufPrint(buf, "{s} {d}\n", .{ opname, data });
                 },
                 0xE8, 0xE9 => {
                     opname = if (opcode == 0xE8) "call" else "jmp";
@@ -597,7 +603,8 @@ pub fn create_instruction(bytes: []u8, buf: []u8) !Instruction {
                 0xAA, 0xAB => "stos",
                 0xAC, 0xAD => "lods",
                 0xAE, 0xAF => "scas",
-                0xC3, 0xCB => "ret",
+                0xC3 => "ret",
+                0xCB => "retf",
                 0xCC => "int",
                 0xCE => "into",
                 0xCF => "iret",
@@ -637,11 +644,9 @@ pub fn create_instruction(bytes: []u8, buf: []u8) !Instruction {
                 operand1 = decode_register(reg, 0b1);
                 src = if (opcode >= 0x90) try fmt.bufPrint(buf, "{s} ax, {s}\n", .{ opname, operand1 }) else try fmt.bufPrint(buf, "{s} {s}\n", .{ opname, operand1 });
             } else if (opcode >= 0xA4 and opcode <= 0xCB) {
-                const w_z: u1 = @intCast(opcode & b0_mask);
-                if (opcode <= 0xA7) {
-                    src = try fmt.bufPrint(buf, "{s} di, si\n", .{opname});
-                } else if (opcode <= 0xAF) {
-                    src = if (opcode == 0xAE or opcode == 0xAF) try fmt.bufPrint(buf, "{s} si\n", .{opname}) else try fmt.bufPrint(buf, "{s} di\n", .{opname});
+                if (opcode < 0xC3) {
+                    const w_z: u1 = @intCast(opcode & b0_mask);
+                    src = if (w_z == 0b0) try fmt.bufPrint(buf, "{s}b\n", .{opname}) else try fmt.bufPrint(buf, "{s}w\n", .{opname});
                 } else {
                     src = try fmt.bufPrint(buf, "{s}\n", .{opname});
                 }
@@ -653,7 +658,7 @@ pub fn create_instruction(bytes: []u8, buf: []u8) !Instruction {
                 const w: u1 = @intCast(opcode & b0_mask);
                 src = if (w == 0b0) try fmt.bufPrint(buf, "{s} al, dx\n", .{opname}) else try fmt.bufPrint(buf, "{s} ax, dx\n", .{opname});
             } else {
-                src = if (opcode == 0xF0) try fmt.bufPrint(buf, "{s} ", .{opname}) else try fmt.bufPrint(buf, "{s}\n", .{opname});
+                src = if (opcode <= 0xF3) try fmt.bufPrint(buf, "{s} ", .{opname}) else try fmt.bufPrint(buf, "{s}\n", .{opname});
             }
         },
 

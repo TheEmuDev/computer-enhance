@@ -215,7 +215,7 @@ pub fn create_instruction(bytes: []u8, buf: []u8) !Instruction {
             // cs = get_immediate(bytes[3], bytes[4]);
             size = 5;
             opname = if (bytes[0] == 0x9A) "call" else "jmp";
-            src = try fmt.bufPrint(buf, "{s} {d}", .{ opname, displacement });
+            src = try fmt.bufPrint(buf, "{s} {d}\n", .{ opname, displacement });
         },
 
         // 4-byte | opcode | mod reg r_m | disp-lo | disp-hi |
@@ -331,7 +331,7 @@ pub fn create_instruction(bytes: []u8, buf: []u8) !Instruction {
                             if (mem_mode_special_case) {
                                 src = try fmt.bufPrint(buf, "{s} {s}, [{d}]\n", .{ opname, operand1, displacement });
                             } else {
-                                src = try fmt.bufPrint(buf, "{s} {s}, {s}", .{ opname, operand1, operand2 });
+                                src = try fmt.bufPrint(buf, "{s} {s}, {s}\n", .{ opname, operand1, operand2 });
                             }
                         },
                         0b01, 0b10 => {
@@ -400,7 +400,7 @@ pub fn create_instruction(bytes: []u8, buf: []u8) !Instruction {
                         if (mem_mode_special_case) {
                             src = if (direction == 0b0) try fmt.bufPrint(buf, "{s} [{d}], {s}\n", .{ opname, displacement, operand2 }) else try fmt.bufPrint(buf, "{s} {s}, [{d}]\n", .{ opname, operand1, displacement });
                         } else {
-                            src = try fmt.bufPrint(buf, "{s} {s}, {s}", .{ opname, operand1, operand2 });
+                            src = try fmt.bufPrint(buf, "{s} {s}, {s}\n", .{ opname, operand1, operand2 });
                         }
                     } else {
                         if (use_signed_displacement) {
@@ -568,7 +568,7 @@ pub fn create_instruction(bytes: []u8, buf: []u8) !Instruction {
                 src = try fmt.bufPrint(buf, "{s}\n", .{opname});
             } else if (opcode < 0xEB) {
                 const word: u1 = @intCast(opcode & b0_mask);
-                src = if (word == 0b0) try fmt.bufPrint(buf, "{s} al, {d}\n", .{ opname, s_data }) else try fmt.bufPrint(buf, "{s} ax, {d}", .{ opname, s_data });
+                src = if (word == 0b0) try fmt.bufPrint(buf, "{s} al, {d}\n", .{ opname, s_data }) else try fmt.bufPrint(buf, "{s} ax, {d}\n", .{ opname, s_data });
             } else {
                 unreachable;
             }

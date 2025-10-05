@@ -17,6 +17,55 @@ const Instruction = struct {
     }
 };
 
+var prefix_sr: u3 = undefined;
+var use_prefix: bool = false;
+
+fn reset_prefix() void {
+    prefix_sr = 0b100;
+    use_prefix = false;
+}
+
+fn decode_segment_register(sr: u3, set_prefix_flag: bool) []const u8 {
+    if (set_prefix_flag) {
+        prefix_sr = sr;
+        use_prefix = true;
+    }
+
+    return switch (sr) {
+        0b000 => "es",
+        0b001 => "cs",
+        0b010 => "ss",
+        0b011 => "ds",
+        else => unreachable,
+    };
+}
+
+fn decode_register_memory(reg_mem: u3, mod: u2, w: u1) []const u8 {
+    return switch (mod) {
+        0b00 => switch (reg_mem) {
+            0b000 => "[bx + si]",
+            0b001 => "[bx + di]",
+            0b010 => "[bp + si]",
+            0b011 => "[bp + di]",
+            0b100 => "[si]",
+            0b101 => "[di]",
+            0b110 => "[{d}]", // 16-bit displacement
+            0b111 => "[bx]",
+        },
+        0b01, 0b10 => switch (reg_mem) {
+            0b000 => "bx + si",
+            0b001 => "bx + di",
+            0b010 => "bp + si",
+            0b011 => "bp + di",
+            0b100 => "si",
+            0b101 => "di",
+            0b110 => "bp",
+            0b111 => "bx",
+        },
+        0b11 => decode_register(reg_mem, w),
+    };
+}
+
 fn decode_register(reg: u3, w: u1) []const u8 {
     return switch (reg) {
         0b000 => if (w == 0b0) "al" else "ax",
@@ -27,46 +76,6 @@ fn decode_register(reg: u3, w: u1) []const u8 {
         0b101 => if (w == 0b0) "ch" else "bp",
         0b110 => if (w == 0b0) "dh" else "si",
         0b111 => if (w == 0b0) "bh" else "di",
-    };
-}
-
-fn decode_register_memory(reg_mem: u3, mod: u2, w: u1) []const u8 {
-    switch (mod) {
-        0b00 => {
-            return switch (reg_mem) {
-                0b000 => "[bx + si]",
-                0b001 => "[bx + di]",
-                0b010 => "[bp + si]",
-                0b011 => "[bp + di]",
-                0b100 => "[si]",
-                0b101 => "[di]",
-                0b110 => "[{d}]", // 16-bit displacement
-                0b111 => "[bx]",
-            };
-        },
-        0b01, 0b10 => {
-            return switch (reg_mem) {
-                0b000 => "bx + si",
-                0b001 => "bx + di",
-                0b010 => "bp + si",
-                0b011 => "bp + di",
-                0b100 => "si",
-                0b101 => "di",
-                0b110 => "bp",
-                0b111 => "bx",
-            };
-        },
-        0b11 => return decode_register(reg_mem, w),
-    }
-}
-
-fn decode_segment_register(sr: u3) []const u8 {
-    return switch (sr) {
-        0b000 => "es",
-        0b001 => "cs",
-        0b010 => "ss",
-        0b011 => "ds",
-        else => unreachable,
     };
 }
 
@@ -102,6 +111,7 @@ pub fn create_instruction(bytes: []u8, buf: []u8) !Instruction {
     var s_data: i16 = undefined;
     var displacement: u16 = undefined;
     var src: []u8 = undefined;
+    var prefix: []const u8 = undefined;
     var operand1: []const u8 = undefined;
     var operand2: []const u8 = undefined;
     var opname: []const u8 = undefined;
@@ -109,7 +119,10 @@ pub fn create_instruction(bytes: []u8, buf: []u8) !Instruction {
 
     var use_signed_displacement: bool = false;
 
-    // log.debug("[{any}]\n", .{bytes[0..6]});
+    if (use_prefix) {
+        prefix = decode_segment_register(prefix_sr, false);
+    }
+
     switch (bytes[0]) {
         // TODO:(Dean): and [bp - 39], 239 does not create correct src (ln #305 in completionist .asm) low priority (signed vs unsigned)
 
@@ -197,14 +210,29 @@ pub fn create_instruction(bytes: []u8, buf: []u8) !Instruction {
                     if (mem_mode_special_case) {
                         src = try fmt.bufPrint(buf, "{s} [{d}], {d}\n", .{ opname, displacement, s_data });
                     } else {
-                        src = try fmt.bufPrint(buf, "{s} {s}, {d}\n", .{ opname, operand1, s_data });
+                        if (use_prefix) {
+                            src = try fmt.bufPrint(buf, "{s} {s}:{s}, {d}\n", .{ opname, prefix, operand1, s_data });
+                            reset_prefix();
+                        } else {
+                            src = try fmt.bufPrint(buf, "{s} {s}, {d}\n", .{ opname, operand1, s_data });
+                        }
                     }
                 },
                 0b01 => {
-                    src = try fmt.bufPrint(buf, "{s} [{s}{s}{d}], {d}\n", .{ opname, operand1, operator, s_displacement, s_data });
+                    if (use_prefix) {
+                        src = try fmt.bufPrint(buf, "{s} {s}:[{s}{s}{d}], {d}\n", .{ opname, prefix, operand1, operator, s_displacement, s_data });
+                        reset_prefix();
+                    } else {
+                        src = try fmt.bufPrint(buf, "{s} [{s}{s}{d}], {d}\n", .{ opname, operand1, operator, s_displacement, s_data });
+                    }
                 },
                 0b10 => {
-                    src = try fmt.bufPrint(buf, "{s} [{s}{s}{d}], {d}\n", .{ opname, operand1, operator, displacement, s_data });
+                    if (use_prefix) {
+                        src = try fmt.bufPrint(buf, "{s} {s}:[{s}{s}{d}], {d}\n", .{ opname, prefix, operand1, operator, displacement, s_data });
+                        reset_prefix();
+                    } else {
+                        src = try fmt.bufPrint(buf, "{s} [{s}{s}{d}], {d}\n", .{ opname, operand1, operator, displacement, s_data });
+                    }
                 }
             }
         },
@@ -212,10 +240,10 @@ pub fn create_instruction(bytes: []u8, buf: []u8) !Instruction {
         // 5-byte | opcode | ip-lo | ip-hi | cs-lo | cs-hi |
         0x9A, 0xEA => { // TODO:(Dean): Find example of this instruction
             displacement = get_immediate(bytes[1], bytes[2]);
-            // cs = get_immediate(bytes[3], bytes[4]);
+            const cs = get_immediate(bytes[3], bytes[4]);
             size = 5;
             opname = if (bytes[0] == 0x9A) "call" else "jmp";
-            src = try fmt.bufPrint(buf, "{s} {d}\n", .{ opname, displacement });
+            src = try fmt.bufPrint(buf, "{s} {d}:{d}\n", .{ opname, cs, displacement });
         },
 
         // 4-byte | opcode | mod reg r_m | disp-lo | disp-hi |
@@ -329,23 +357,43 @@ pub fn create_instruction(bytes: []u8, buf: []u8) !Instruction {
                     switch (mode) {
                         0b00, 0b11 => {
                             if (mem_mode_special_case) {
-                                src = try fmt.bufPrint(buf, "{s} {s}, [{d}]\n", .{ opname, operand1, displacement });
+                                if (use_prefix) {
+                                    src = try fmt.bufPrint(buf, "{s} {s}, {s}:[{d}]\n", .{ opname, operand1, prefix, displacement });
+                                    reset_prefix();
+                                } else {
+                                    src = try fmt.bufPrint(buf, "{s} {s}, [{d}]\n", .{ opname, operand1, displacement });
+                                }
                             } else {
-                                src = try fmt.bufPrint(buf, "{s} {s}, {s}\n", .{ opname, operand1, operand2 });
+                                if (use_prefix) {
+                                    src = try fmt.bufPrint(buf, "{s} {s}, {s}:{s}\n", .{ opname, operand1, prefix, operand2 });
+                                    reset_prefix();
+                                } else {
+                                    src = try fmt.bufPrint(buf, "{s} {s}, {s}\n", .{ opname, operand1, operand2 });
+                                }
                             }
                         },
                         0b01, 0b10 => {
                             if (use_signed_displacement) {
-                                src = try fmt.bufPrint(buf, "{s} {s}, [{s}{s}{d}]\n", .{ opname, operand1, operand2, operator, s_displacement });
+                                if (use_prefix) {
+                                    src = try fmt.bufPrint(buf, "{s} {s}, {s}:[{s}{s}{d}]\n", .{ opname, operand1, prefix, operand2, operator, s_displacement });
+                                    reset_prefix();
+                                } else {
+                                    src = try fmt.bufPrint(buf, "{s} {s}, [{s}{s}{d}]\n", .{ opname, operand1, operand2, operator, s_displacement });
+                                }
                             } else {
-                                src = try fmt.bufPrint(buf, "{s} {s}, [{s}{s}{d}]\n", .{ opname, operand1, operand2, operator, displacement });
+                                if (use_prefix) {
+                                    src = try fmt.bufPrint(buf, "{s} {s}, {s}:[{s}{s}{d}]\n", .{ opname, operand1, prefix, operand2, operator, displacement });
+                                    reset_prefix();
+                                } else {
+                                    src = try fmt.bufPrint(buf, "{s} {s}, [{s}{s}{d}]\n", .{ opname, operand1, operand2, operator, displacement });
+                                }
                             }
                         }
                     }
                 },
-                0x8C, 0x8E => {
-                    operand1 = if (is_0x8C) decode_register_memory(r_m, mode, word) else decode_segment_register(r_op2);
-                    operand2 = if (is_0x8C) decode_segment_register(r_op2) else decode_register_memory(r_m, mode, word);
+                0x8C, 0x8E => { // TODO:(Dean): use_prefix stuff here?
+                    operand1 = if (is_0x8C) decode_register_memory(r_m, mode, word) else decode_segment_register(r_op2, false);
+                    operand2 = if (is_0x8C) decode_segment_register(r_op2, false) else decode_register_memory(r_m, mode, word);
                     switch (mode) {
                         0b00, 0b11 => {
                             if (mem_mode_special_case) {
@@ -369,44 +417,123 @@ pub fn create_instruction(bytes: []u8, buf: []u8) !Instruction {
                         0x8F, 0xF6, 0xF7, 0xFE, 0xFF => {
                             if (is_0xF6_or_0xF7_special_case) {
                                 if (mode == 0b00 or mode == 0b11) {
-                                    src = if (mem_mode_special_case) try fmt.bufPrint(buf, "{s} [{d}], {d}\n", .{ opname, displacement, data }) else try fmt.bufPrint(buf, "{s} {s}, {d}\n", .{ opname, operand1, data });
+                                    if (mem_mode_special_case) {
+                                        if (use_prefix) {
+                                            src = try fmt.bufPrint(buf, "{s} {s}:[{d}], {d}\n", .{ opname, prefix, displacement, data });
+                                            reset_prefix();
+                                        } else {
+                                            src = try fmt.bufPrint(buf, "{s} [{d}], {d}\n", .{ opname, displacement, data });
+                                        }
+                                    } else {
+                                        if (use_prefix) {
+                                            src = try fmt.bufPrint(buf, "{s} {s}:{s}, {d}\n", .{ opname, prefix, operand1, data });
+                                            reset_prefix();
+                                        } else {
+                                            src = try fmt.bufPrint(buf, "{s} {s}, {d}\n", .{ opname, operand1, data });
+                                        }
+                                    }
                                 } else {
-                                    src = try fmt.bufPrint(buf, "{s} [{s}{s}{d}], {d}\n", .{ opname, operand1, operator, displacement, data });
+                                    if (use_prefix) {
+                                        src = try fmt.bufPrint(buf, "{s} {s}:[{s}{s}{d}], {d}\n", .{ opname, prefix, operand1, operator, displacement, data });
+                                        reset_prefix();
+                                    } else {
+                                        src = try fmt.bufPrint(buf, "{s} [{s}{s}{d}], {d}\n", .{ opname, operand1, operator, displacement, data });
+                                    }
                                 }
                             } else {
                                 if (mode == 0b00 or mode == 0b11) { // NOTE:(Dean): 0xFF might have some shenanigans here
-                                    src = if (mem_mode_special_case) try fmt.bufPrint(buf, "{s} [{d}]\n", .{ opname, displacement }) else try fmt.bufPrint(buf, "{s} {s}\n", .{ opname, operand1 });
+                                    if (mem_mode_special_case) {
+                                        if (use_prefix) {
+                                            src = try fmt.bufPrint(buf, "{s} {s}:[{d}]\n", .{ opname, prefix, displacement });
+                                            reset_prefix();
+                                        } else {
+                                            src = try fmt.bufPrint(buf, "{s} [{d}]\n", .{ opname, displacement });
+                                        }
+                                    } else {
+                                        if (use_prefix) {
+                                            src = try fmt.bufPrint(buf, "{s} {s}:{s}\n", .{ opname, prefix, operand1 });
+                                            reset_prefix();
+                                        } else {
+                                            src = try fmt.bufPrint(buf, "{s} {s}\n", .{ opname, operand1 });
+                                        }
+                                    }
                                 } else {
-                                    src = if (use_signed_displacement) try fmt.bufPrint(buf, "{s} [{s}{s}{d}]\n", .{ opname, operand1, operator, s_displacement }) else try fmt.bufPrint(buf, "{s} [{s}{s}{d}]\n", .{ opname, operand1, operator, displacement });
+                                    if (use_prefix) {
+                                        src = if (use_signed_displacement) try fmt.bufPrint(buf, "{s} {s}:[{s}{s}{d}]\n", .{ opname, prefix, operand1, operator, s_displacement }) else try fmt.bufPrint(buf, "{s} {s}:[{s}{s}{d}]\n", .{ opname, prefix, operand1, operator, displacement });
+                                        reset_prefix();
+                                    } else {
+                                        src = if (use_signed_displacement) try fmt.bufPrint(buf, "{s} [{s}{s}{d}]\n", .{ opname, operand1, operator, s_displacement }) else try fmt.bufPrint(buf, "{s} [{s}{s}{d}]\n", .{ opname, operand1, operator, displacement });
+                                    }
                                 }
                             }
                         },
                         0xD0, 0xD1, 0xD2, 0xD3 => {
                             operand2 = if (opcode == 0xD2 or opcode == 0xD3) "cl" else "1";
                             if (mode == 0b00 or mode == 0b11) {
-                                src = if (mem_mode_special_case) try fmt.bufPrint(buf, "{s} [{d}], {s}\n", .{ opname, displacement, operand2 }) else try fmt.bufPrint(buf, "{s} {s}, {s}\n", .{ opname, operand1, operand2 });
+                                if (mem_mode_special_case) {
+                                    if (use_prefix) {
+                                        src = try fmt.bufPrint(buf, "{s} {s}:[{d}], {s}\n", .{ opname, prefix, displacement, operand2 });
+                                        reset_prefix();
+                                    } else {
+                                        src = try fmt.bufPrint(buf, "{s} [{d}], {s}\n", .{ opname, displacement, operand2 });
+                                    }
+                                } else {
+                                    if (use_prefix) {
+                                        src = try fmt.bufPrint(buf, "{s} {s}:{s}, {s}\n", .{ opname, prefix, operand1, operand2 });
+                                        reset_prefix();
+                                    } else {
+                                        src = try fmt.bufPrint(buf, "{s} {s}, {s}\n", .{ opname, operand1, operand2 });
+                                    }
+                                }
                             } else {
-                                src = if (use_signed_displacement) try fmt.bufPrint(buf, "{s} [{s}{s}{d}], {s}\n", .{ opname, operand1, operator, s_displacement, operand2 }) else try fmt.bufPrint(buf, "{s} [{s}{s}{d}], {s}\n", .{ opname, operand1, operator, displacement, operand2 });
+                                if (use_prefix) {
+                                    src = if (use_signed_displacement) try fmt.bufPrint(buf, "{s} {s}:[{s}{s}{d}], {s}\n", .{ opname, prefix, operand1, operator, s_displacement, operand2 }) else try fmt.bufPrint(buf, "{s} {s}:[{s}{s}{d}], {s}\n", .{ opname, prefix, operand1, operator, displacement, operand2 });
+                                    reset_prefix();
+                                } else {
+                                    src = if (use_signed_displacement) try fmt.bufPrint(buf, "{s} [{s}{s}{d}], {s}\n", .{ opname, operand1, operator, s_displacement, operand2 }) else try fmt.bufPrint(buf, "{s} [{s}{s}{d}], {s}\n", .{ opname, operand1, operator, displacement, operand2 });
+                                }
                             }
                         },
                         else => unreachable
                     }
                 },
-
+                // TODO:(Dean): I was here - use_prefix thing
                 else => {
-                    operand1 = if (direction == 0b0 and opcode != 0x8D and opcode != 0xC4 and opcode != 0xC5) decode_register_memory(r_m, mode, word) else decode_register(r_op2, word);
-                    operand2 = if (direction == 0b0 and opcode != 0x8D and opcode != 0xC4 and opcode != 0xC5) decode_register(r_op2, word) else decode_register_memory(r_m, mode, word);
+                    const is_operand1_reg_mem: bool = direction == 0b0 and opcode != 0x8D and opcode != 0xC4 and opcode != 0xC5;
+                    operand1 = if (is_operand1_reg_mem) decode_register_memory(r_m, mode, word) else decode_register(r_op2, word);
+                    operand2 = if (is_operand1_reg_mem) decode_register(r_op2, word) else decode_register_memory(r_m, mode, word);
                     if (mode == 0b00 or mode == 0b11) {
                         if (mem_mode_special_case) {
                             src = if (direction == 0b0) try fmt.bufPrint(buf, "{s} [{d}], {s}\n", .{ opname, displacement, operand2 }) else try fmt.bufPrint(buf, "{s} {s}, [{d}]\n", .{ opname, operand1, displacement });
+                            if (use_prefix) {
+                                src = if (direction == 0b0) try fmt.bufPrint(buf, "{s} {s}:[{d}], {s}\n", .{ opname, prefix, displacement, operand2 }) else try fmt.bufPrint(buf, "{s} {s}, {s}:[{d}]\n", .{ opname, operand1, prefix, displacement });
+                                reset_prefix();
+                            } else {
+                                src = if (direction == 0b0) try fmt.bufPrint(buf, "{s} [{d}], {s}\n", .{ opname, displacement, operand2 }) else try fmt.bufPrint(buf, "{s} {s}, [{d}]\n", .{ opname, operand1, displacement });
+                            }
                         } else {
-                            src = try fmt.bufPrint(buf, "{s} {s}, {s}\n", .{ opname, operand1, operand2 });
+                            if (use_prefix) {
+                                src = if (is_operand1_reg_mem) try fmt.bufPrint(buf, "{s} {s}:{s}, {s}\n", .{ opname, prefix, operand1, operand2 }) else try fmt.bufPrint(buf, "{s} {s}, {s}:{s}\n", .{ opname, operand1, prefix, operand2 });
+                                reset_prefix();
+                            } else {
+                                src = try fmt.bufPrint(buf, "{s} {s}, {s}\n", .{ opname, operand1, operand2 });
+                            }
                         }
                     } else {
                         if (use_signed_displacement) {
-                            src = if (direction == 0b0 and opcode != 0x8D and opcode != 0xC4 and opcode != 0xC5) try fmt.bufPrint(buf, "{s} [{s}{s}{d}], {s}\n", .{ opname, operand1, operator, s_displacement, operand2 }) else try fmt.bufPrint(buf, "{s} {s}, [{s}{s}{d}]\n", .{ opname, operand1, operand2, operator, s_displacement });
+                            if (use_prefix) {
+                                src = if (is_operand1_reg_mem) try fmt.bufPrint(buf, "{s} {s}:[{s}{s}{d}], {s}\n", .{ opname, prefix, operand1, operator, s_displacement, operand2 }) else try fmt.bufPrint(buf, "{s} {s}, {s}:[{s}{s}{d}]\n", .{ opname, operand1, prefix, operand2, operator, s_displacement });
+                                reset_prefix();
+                            } else {
+                                src = if (is_operand1_reg_mem) try fmt.bufPrint(buf, "{s} [{s}{s}{d}], {s}\n", .{ opname, operand1, operator, s_displacement, operand2 }) else try fmt.bufPrint(buf, "{s} {s}, [{s}{s}{d}]\n", .{ opname, operand1, operand2, operator, s_displacement });
+                            }
                         } else {
-                            src = if (direction == 0b0 and opcode != 0x8D and opcode != 0xC4 and opcode != 0xC5) try fmt.bufPrint(buf, "{s} [{s}{s}{d}], {s}\n", .{ opname, operand1, operator, displacement, operand2 }) else try fmt.bufPrint(buf, "{s} {s}, [{s}{s}{d}]\n", .{ opname, operand1, operand2, operator, displacement });
+                            if (use_prefix) {
+                                src = if (is_operand1_reg_mem) try fmt.bufPrint(buf, "{s} {s}:[{s}{s}{d}], {s}\n", .{ opname, prefix, operand1, operator, displacement, operand2 }) else try fmt.bufPrint(buf, "{s} {s}, {s}:[{s}{s}{d}]\n", .{ opname, operand1, prefix, operand2, operator, displacement });
+                                reset_prefix();
+                            } else {
+                                src = if (is_operand1_reg_mem) try fmt.bufPrint(buf, "{s} [{s}{s}{d}], {s}\n", .{ opname, operand1, operator, displacement, operand2 }) else try fmt.bufPrint(buf, "{s} {s}, [{s}{s}{d}]\n", .{ opname, operand1, operand2, operator, displacement });
+                            }
                         }
                     }
                 },
@@ -629,16 +756,18 @@ pub fn create_instruction(bytes: []u8, buf: []u8) !Instruction {
 
             if (opcode <= 0x1F) {
                 const sr: u3 = @intCast((opcode & b43_mask) >> 3);
-                operand1 = decode_segment_register(sr);
+                operand1 = decode_segment_register(sr, false);
                 src = try fmt.bufPrint(buf, "{s} {s}\n", .{ opname, operand1 });
             } else if (opcode <= 0x3F) {
                 const sr: u3 = @intCast((opcode & b43_mask) >> 3);
-                operand1 = decode_segment_register(sr);
-                src = switch (opcode) {
-                    0x26, 0x2E, 0x36, 0x3E => try fmt.bufPrint(buf, "{s}:\n", .{operand1}), // TODO:(Dean): Does the newline here need to be removed?
-                    0x27, 0x2F, 0x37, 0x3F => try fmt.bufPrint(buf, "{s}\n", .{opname}),
+                operand1 = if (opcode == 0x26 or opcode == 0x2E or opcode == 0x36 or opcode == 0x3E) decode_segment_register(sr, true) else ""; //decode_segment_register(sr, false);
+                switch (opcode) {
+                    0x26, 0x2E, 0x36, 0x3E => {
+                        src = "";
+                    },
+                    0x27, 0x2F, 0x37, 0x3F => src = try fmt.bufPrint(buf, "{s}\n", .{opname}),
                     else => unreachable,
-                };
+                }
             } else if (opcode <= 0x97) {
                 const reg: u3 = @intCast(opcode & b210_mask);
                 operand1 = decode_register(reg, 0b1);
